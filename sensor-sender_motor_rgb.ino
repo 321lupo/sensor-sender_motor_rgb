@@ -20,9 +20,12 @@ const int channel = 1;
 #define MODE1_CONTROL 20
 #define MODE2_CONTROL 30
 
-#define GREEN 3
-#define BLUE 4
-#define RED 5
+#define BLUE1 10
+#define GREEN1 9
+#define RED1 6
+#define BLUE2 5
+#define GREEN2 4
+#define RED2 3
 
 //sensor values
 #define FINGER_N 8
@@ -51,6 +54,7 @@ uint16_t fingerMax[FINGER_N];
 Bounce XYLockButton = Bounce(BUTTON3, 10);
 Bounce ModeButton = Bounce(FINGERPIN1, 10);
 Bounce CalibButton = Bounce(BUTTON4, 10);
+Bounce MuteButton = Bounce(FINGERPIN2, 10);
 
 uint8_t xy_lock = 0;  // Store whether or not we're in XY lock.
                       // This is so we can connect with Ableton
@@ -62,31 +66,29 @@ byte values [6];
 char output [512];
 
 //vibration motor
-const int motorPin = 9;
+const int motorPin = 23;
 
 //Which mode we are in: 0 is gesture
 //mode 1 is accel -> note
-#define MODES 4
+#define MODES 2
 int mode = 0;
 
 bool in_calibration_mode = false;
-int calib_on_time = -1;
+int calib_on_time = -1; // You have to hold down the calibration buton. Track that.
+bool muted = false;
 
 /*
- * mode 1 state
+ * current note
  */
-int mode1note = -1;
+int current_note = -1;
 
-
-/*
- * mode 2 state
- */
-int mode2note = -1;
 
 // timing details: we want to send midi at a 50hz clock
 // that means everz 20 ms
 int lastMidiSend = 0;
 #define MIDI_INTERVAL 20
+
+int midiClock = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -99,9 +101,12 @@ void setup() {
   
   pinMode(motorPin, OUTPUT);
   
-  pinMode(GREEN, OUTPUT);
-  pinMode(BLUE, OUTPUT);
-  pinMode(RED, OUTPUT);
+  pinMode(BLUE1, OUTPUT);
+  pinMode(GREEN1, OUTPUT);
+  pinMode(BLUE1, OUTPUT);
+  pinMode(BLUE2, OUTPUT);
+  pinMode(GREEN2, OUTPUT);
+  pinMode(BLUE2, OUTPUT);
 
   mode = EEPROM.read(1);
   
@@ -119,17 +124,14 @@ void loop() {
     mode++;
     mode %= MODES;
     Serial.println("mode switch");
-    
-    //do mode switch reset stuff here
 
-    //mode 0
+    /*
+     * We've switched modes - clean some stuff up.
+     */
     xy_lock = 0;
+    clearOutput();
 
-    // mode 1
-    if (mode1note != -1){
-      usbMIDI.sendNoteOff(mode1note, 99, MIDI_CHAN);
-      mode1note = -1;
-    }
+    //Save the current mode to EEPROM
     EEPROM.write(1, mode);
   }
 
@@ -145,6 +147,7 @@ void loop() {
 
   if (!in_calibration_mode && calib_on_time > -1 && millis() - calib_on_time > 3000){
     Serial.println("enter calib");
+    clearOutput();
     in_calibration_mode = true;
     resetCalibration();
   }
@@ -159,41 +162,65 @@ void loop() {
     updateCalibration();
     return;
   }
+
+  //Check for mute mode
+  if (MuteButton.fallingEdge()){
+    muted = !muted;
+    if(muted){
+      clearOutput();
+    }
+  }
   
   //Do MIDI communication
   int t = millis();
   if (t - lastMidiSend >= MIDI_INTERVAL) {
-    sendOutput();
+    if(!muted){
+      sendOutput();
+    }
     lastMidiSend = t;
   }  
  
   // clean up: clear midi buffer
   while (usbMIDI.read()) ; // read and discard any incoming MIDI messages
-  
+}
+
+void clearOutput() {
+  if (current_note != -1){
+    usbMIDI.sendNoteOff(current_note, 99, MIDI_CHAN);
+    current_note = -1;
+  }
+
+  analogWrite(BLUE1, 0);
+  analogWrite(BLUE2, 0);
 }
 
 void sendOutput() {
    // timing code: if it's been more than 20ms since our last
   // send, then send again
-  Serial.println("Mode " + (String) mode);
+  //Serial.println("Mode " + (String) mode);
 
   if (XYLockButton.update() && XYLockButton.fallingEdge()){
       xy_lock++;
   }
-  
-  if (mode == 0){ // gesture selects the control channel
+
+
+  /*
+   * If there are no gestures, send nothing.
+   * If there is a thumb gesture, send a note.
+   * If there are other gestures, send control changes
+   */
+  if (mode == 0){
     // calibration mode: xy lock
     xy_lock %= 3;
     
-    // TODO: calibrate accel
-    
-    
-    
+   
     // Which control number we should send.
     // This code will read the states of all of the fingers, and decide
     // which, if any, controls should be sent
     int xcontrol = -1;
     int ycontrol = -1;
+    bool send_note = false;
+
     Serial.print("{ ");
     for (int i = 0; i < FINGER_N; i++){
       Serial.print(fingers[i]);
@@ -203,70 +230,74 @@ void sendOutput() {
     Serial.println();
     
     
-    if(gesture(fingers, (const int[]){ 430, 529, 883, 840, 791, 629, 575, 250, }))               {xcontrol = 1; ycontrol=2; } //pistol
-    else if( gesture(fingers,  (const int[])  { 291, 450, 376, 472, 421, 478, 467, 487, }  )) {xcontrol = 3; ycontrol=4;} //fist
-    else if( gesture(fingers,  (const int[])   { 334, 361, 343, 391, 311, 339, 338, 148, }    )) {xcontrol = 5; ycontrol=6;} //flat
-    else if( gesture(fingers,  (const int[])   { 372, 345, 832, 409, 741, 333, 588, 228, }   )) {xcontrol = 7; ycontrol=8;} //tiger
-    else if( gesture(fingers,  (const int[])   { 473, 737, 361, 810, 333, 491, 454, 218, }    )) {xcontrol = 9; ycontrol=10;} //duck
-    else if( gesture(fingers,  (const int[])   { 440, 423, 893, 834, 777, 568, 423, 155, }  )) {xcontrol = 11; ycontrol=12;} //metalhead
-    else if( gesture(fingers,  (const int[])   { 403, 429, 341, 551, 778, 635, 599, 263, }    )) {xcontrol = 13; ycontrol=14;} // big gun copy this line to add new gestures
+    if(gesture(fingers, (const int[])          { 465, 89, 250, 461, 467, 450, 404, 414,  }     )) {xcontrol = 1; ycontrol=2; } //pistol
+    else if( gesture(fingers,  (const int[])   { 291, 450, 376, 472, 421, 478, 467, 487, }     )) {xcontrol = 3; ycontrol=4;} //fist
+    else if( gesture(fingers,  (const int[])   { 89, 50, -5, 30, 90, 31, 56, 52, }             )) {send_note = true; } //flat
+    else if( gesture(fingers,  (const int[])   { 179, 266, -23, 361, 95, 348, 108, 150, }      )) {xcontrol = 7; ycontrol=8;} //tiger
+    else if( gesture(fingers,  (const int[])   { 528, 42, 402, 47, 420, 43, 394, 176, }        )) {xcontrol = 9; ycontrol=10;} //duck
+    else if( gesture(fingers,  (const int[])   { 485, 36, 260, 456, 456, 411, 303, 62, }       )) {xcontrol = 11; ycontrol=12;} //metalhead
+    else if( gesture(fingers,  (const int[])   { 416, 31, 158, 24, 500, 403, 408, 418, }       )) {xcontrol = 13; ycontrol=14;} // big gun copy this line to add new gestures
 
-    bool in_gesture = (xcontrol != 1 || ycontrol != -1);
-    
-    if (xcontrol != -1 && xy_lock != 2){
-      int xmidi = map (accel_x, -130, 220, 0, 127);    
-      sendControl(xcontrol + MODE0_CONTROL, xmidi);
-    }
-    if (ycontrol != -1 && xy_lock != 1){
-      int ymidi = map (accel_y, 100, -245, 0, 127);    
-      sendControl(ycontrol + MODE0_CONTROL, ymidi);
+    bool in_gesture = (xcontrol != -1 || ycontrol != -1);
+
+    if (send_note) {
+      noteOn();
+    } else {
+      noteOff();
     }
     
     if (in_gesture){
-      analogWrite(BLUE, 0);
-      analogWrite(GREEN, 255);
-      analogWrite(RED, 0);
-    } else {
-      analogWrite(BLUE, 255);
-      analogWrite(GREEN, 0);
-      analogWrite(RED, 255);
+      Serial.println("In gesture");
+      int ledval = 0;
+      if (xcontrol != -1 && xy_lock != 2){
+        int xmidi = map (accel_x, -130, 220, 0, 127);    
+        sendControl(xcontrol + MODE0_CONTROL, xmidi);
+        ledval = xmidi;
+      }
+      if (ycontrol != -1 && xy_lock != 1){
+        int ymidi = map (accel_y, 100, -245, 0, 127);    
+        sendControl(ycontrol + MODE0_CONTROL, ymidi);
+        if(ymidi > ledval) { ledval = ymidi;}
+      }
+
+      /*
+       * Send a motor hit
+       */
+      digitalWrite(motorPin, HIGH);
+      delay(4);                                                                           //make milis!!!
       digitalWrite(motorPin, LOW);
+      delay(6);
+
+      /*
+       * Show the LED
+       */
+      ledval *= 2;
+      if (ledval > 255) {ledval = 255;}
+      analogWrite(BLUE1, ledval);
+      analogWrite(BLUE2, ledval);
     }
-      
-  } 
+    else {
+      analogWrite(BLUE1, 0);
+      analogWrite(BLUE2, 0);
+    }
+  }
+   
   /*
    * Accel X is the note value.
    * the fingers are fixed control channels
    * The "key press" is the thumb
+   * The arpeggiator is enabled
    */
-  else if (mode == 1) {
-    const int thumb_level = 280;
+  else if (mode == 1 ) {
+#define THUMB_THRESH 250
+
+    if(fingers[0] > THUMB_THRESH){
+      noteOn();
+    } else {
+      noteOff();
+    }
     xy_lock %= (FINGER_N);
     
-    int note = map (accel_x, 130, -220, 0, 127);
-    if (note>=127) note=127;
-    if (note<=0) note=0;
-
-    //Check if thumb is over threshold
-    if( fingers[0] >= thumb_level && mode1note != note){
-      if (mode1note != -1){
-        usbMIDI.sendNoteOff(mode1note, 99, MIDI_CHAN);
-      }
-      #ifdef DEBUG
-      Serial.print("Sending note on ");
-      Serial.println(note);
-      #endif
-      
-      usbMIDI.sendNoteOn(note, 99, MIDI_CHAN);
-      mode1note = note;
-    }
-    
-    else if (fingers[0] < thumb_level && mode1note != -1){
-      // send note up
-      usbMIDI.sendNoteOff(mode1note, 99, MIDI_CHAN);
-      mode1note = -1;
-    }
-
     // Send control channels
     if (xy_lock != 0){
       int val = map(fingers[xy_lock], 100, 400, 0, 127);
@@ -277,11 +308,7 @@ void sendOutput() {
         sendControl(i + MODE1_CONTROL, val);
       }
     }
-  } else if (mode == 2) { // midi arpeggio
-    
-  } else if (mode == 3) { // z val -> drum awesome
-  
-  } 
+  }
 }
 
 void sendControl(int num, int val) {
@@ -298,6 +325,39 @@ void sendControl(int num, int val) {
   Serial.print(val);
   Serial.println();
   #endif
+}
+
+
+void noteOn(){
+  int note = map (accel_x, -130, 220, 0, 8);
+  if (note>=7) note=7;
+  if (note<=0) note=0;
+
+  int scale[] = {60, 62, 64, 65, 67, 69, 71, 72};
+  note = scale[note];
+
+  if (current_note == note){
+    return;
+  }
+  
+  if (current_note != -1){
+    usbMIDI.sendNoteOff(current_note, 99, MIDI_CHAN);
+  }
+  #ifdef DEBUG
+  Serial.print("Sending note on ");
+  Serial.println(note);
+  #endif
+  
+  usbMIDI.sendNoteOn(note, 99, MIDI_CHAN);
+  current_note = note;
+}
+
+void noteOff(){
+  if (current_note != -1){
+    // send note up
+    usbMIDI.sendNoteOff(current_note, 99, MIDI_CHAN);
+    current_note = -1;
+  }
 }
   
 void initAccel(){
@@ -358,6 +418,7 @@ void readButtons(){
   //XYLockButton.update();
   ModeButton.update();
   CalibButton.update();
+  MuteButton.update();
 }
 
 
@@ -371,7 +432,7 @@ void readFingers(){
   }
 }
 
-#define DIFF_THRESH 100
+#define DIFF_THRESH 130
 bool gesture(int fv[], const int def[]){
   for(int i = 0; i < FINGER_N; i++){
     if (abs(fv[i] - def[i]) > DIFF_THRESH)
@@ -436,4 +497,20 @@ void writeCalibration() {
     writeShort(CALIB_ADDR + 2*FINGER_N + 2*i, fingerMax[i]);
   }
 }
+
+/* void handleMidiClock(byte message){
+  if (message == 248){
+    midiClock++;
+  }
+
+  else if (message == 250 || message == 251){
+    //MIDI START / MIDI CONTINUE
+    midiClock = 0;
+  }
+  else if (mmessage == 252){
+    // MIDI STOP
+  }
+
+  midiClock %= 24 * 4; // 24 pulses per quarter note
+}*/
 
