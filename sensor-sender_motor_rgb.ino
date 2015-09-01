@@ -17,15 +17,15 @@ const int channel = 1;
 
 // control number offsets
 #define MODE0_CONTROL 0
-#define MODE1_CONTROL 20
-#define MODE2_CONTROL 30
+#define MODE1_CONTROL MODE0_CONTROL + 20
+#define MODE2_CONTROL MODE1_CONTROL + 1
 
 #define BLUE1 10
-#define GREEN1 9
-#define RED1 6
+#define GREEN1 6
+#define RED1 9
 #define BLUE2 5
-#define GREEN2 4
-#define RED2 3
+#define GREEN2 3
+#define RED2 4
 
 //sensor values
 #define FINGER_N 8
@@ -70,7 +70,7 @@ const int motorPin = 23;
 
 //Which mode we are in: 0 is gesture
 //mode 1 is accel -> note
-#define MODES 2
+#define MODES 3
 int mode = 0;
 
 bool in_calibration_mode = false;
@@ -123,7 +123,8 @@ void loop() {
   if (ModeButton.fallingEdge()){
     mode++;
     mode %= MODES;
-    Serial.println("mode switch");
+    Serial.print("mode switch ");
+    Serial.println(mode);
 
     /*
      * We've switched modes - clean some stuff up.
@@ -192,12 +193,16 @@ void clearOutput() {
 
   analogWrite(BLUE1, 0);
   analogWrite(BLUE2, 0);
+  analogWrite(RED1, 0);
+  analogWrite(RED2, 0);
+  analogWrite(GREEN1, 0);
+  analogWrite(GREEN2, 0);
 }
 
 void sendOutput() {
    // timing code: if it's been more than 20ms since our last
   // send, then send again
-  //Serial.println("Mode " + (String) mode);
+  Serial.println("Mode " + (String) mode);
 
   if (XYLockButton.update() && XYLockButton.fallingEdge()){
       xy_lock++;
@@ -232,7 +237,7 @@ void sendOutput() {
     
     if(gesture(fingers, (const int[])          { 465, 89, 250, 461, 467, 450, 404, 414,  }     )) {xcontrol = 1; ycontrol=2; } //pistol
     else if( gesture(fingers,  (const int[])   { 291, 450, 376, 472, 421, 478, 467, 487, }     )) {xcontrol = 3; ycontrol=4;} //fist
-    else if( gesture(fingers,  (const int[])   { 89, 50, -5, 30, 90, 31, 56, 52, }             )) {send_note = true; } //flat
+    else if( gesture(fingers,  (const int[])   { 89, 50, -5, 30, 90, 31, 56, 52, }             )) {send_note = true; ycontrol=5; } //flat
     else if( gesture(fingers,  (const int[])   { 179, 266, -23, 361, 95, 348, 108, 150, }      )) {xcontrol = 7; ycontrol=8;} //tiger
     else if( gesture(fingers,  (const int[])   { 528, 42, 402, 47, 420, 43, 394, 176, }        )) {xcontrol = 9; ycontrol=10;} //duck
     else if( gesture(fingers,  (const int[])   { 485, 36, 260, 456, 456, 411, 303, 62, }       )) {xcontrol = 11; ycontrol=12;} //metalhead
@@ -240,10 +245,14 @@ void sendOutput() {
 
     bool in_gesture = (xcontrol != -1 || ycontrol != -1);
 
-    if (send_note) {
+    if (send_note && xy_lock != 2) {
       noteOn();
+      analogWrite(RED1, 255);
+      analogWrite(RED2, 255);
     } else {
       noteOff();
+      analogWrite(RED1, 0);
+      analogWrite(RED2, 0);
     }
     
     if (in_gesture){
@@ -271,22 +280,27 @@ void sendOutput() {
       /*
        * Show the LED
        */
-      ledval *= 2;
+      ledval = map(ledval, 0, 127, 0, 127);
       if (ledval > 255) {ledval = 255;}
-      analogWrite(BLUE1, ledval);
-      analogWrite(BLUE2, ledval);
+      analogWrite(BLUE1, ledval * 1);
+      analogWrite(BLUE2, ledval * 1);
+
+      analogWrite(GREEN1, ledval * 0);
+      analogWrite(GREEN2, ledval * 0);
+      
     }
     else {
       analogWrite(BLUE1, 0);
       analogWrite(BLUE2, 0);
+      analogWrite(GREEN1, 0);
+      analogWrite(GREEN2, 0);
     }
   }
    
   /*
    * Accel X is the note value.
-   * the fingers are fixed control channels
-   * The "key press" is the thumb
-   * The arpeggiator is enabled
+   * Accel Y is a single control
+   * The average of the fingers is the arpeggiator speed
    */
   else if (mode == 1 ) {
 #define THUMB_THRESH 250
@@ -307,6 +321,38 @@ void sendOutput() {
         int val = map(fingers[i], 100, 400, 0, 127);
         sendControl(i + MODE1_CONTROL, val);
       }
+    }
+  }
+
+  /*
+   * All of the fingers (except thumb) are controls
+   * Fingers are 21-29, X is 29, and Y is 30
+   */
+  else if (mode == 2) {
+    // calibration mode: xy lock
+    xy_lock %= (FINGER_N + 2);
+
+    /* Program mode - obey xy_lock */
+    if (xy_lock != 0){
+      int val = 0;
+      if (xy_lock < FINGER_N){
+        val = map(fingers[xy_lock], 600, 0, 0, 127);
+      } else if (xy_lock == FINGER_N){
+        val = map (accel_x, -130, 220, 0, 127); 
+      } else if (xy_lock == FINGER_N + 1){
+        val = map (accel_y, 100, -245, 0, 127);
+      }
+      sendControl(xy_lock + MODE2_CONTROL, val);    
+    }
+    else {
+      for(int i = 0; i < FINGER_N; i++){
+        int val = map(fingers[i], 600, 0, 0, 127);
+        sendControl(i + MODE2_CONTROL, val);
+      }
+      int val = map (accel_x, -130, 220, 0, 127);
+      sendControl(FINGER_N + MODE2_CONTROL, val);
+      val = map (accel_y, 100, -245, 0, 127);
+      sendControl(1 + FINGER_N + MODE2_CONTROL, val);
     }
   }
 }
