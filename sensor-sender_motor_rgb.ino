@@ -212,7 +212,7 @@ void clearOutput() {
 void sendOutput() {
    // timing code: if it's been more than 20ms since our last
   // send, then send again
-  Serial.println("Mode " + (String) mode);
+  Serial.println("Mode " + (String) mode + (String) xy_lock);
 
   if (XYLockButton.update() && XYLockButton.fallingEdge()){
       xy_lock++;
@@ -348,24 +348,24 @@ void sendOutput() {
     /* Program mode - obey xy_lock */
     if (xy_lock != 0){
       int val = 0;
-      if (xy_lock < FINGER_N){
+      if (xy_lock < FINGER_N - 1){
         val = map(fingers[xy_lock], 600, 0, 0, 127);
-      } else if (xy_lock == FINGER_N){
+      } else if (xy_lock == FINGER_N - 1){
         val = map (accel_x, -130, 220, 0, 127); 
-      } else if (xy_lock == FINGER_N + 1){
+      } else if (xy_lock == FINGER_N ){
         val = map (accel_y, 100, -245, 0, 127);
       }
       sendControl(xy_lock + MODE2_CONTROL, val);    
     }
     else {
-      for(int i = 0; i < FINGER_N; i++){
-        int val = map(fingers[i], 600, 0, 0, 127);
+      for(int i = 0; i < FINGER_N - 1; i++){
+        int val = map(fingers[i + 1], 600, 0, 0, 127);
         sendControl(i + MODE2_CONTROL, val);
       }
       int val = map (accel_x, -130, 220, 0, 127);
-      sendControl(FINGER_N + MODE2_CONTROL, val);
+      sendControl(FINGER_N - 1 + MODE2_CONTROL, val);
       val = map (accel_y, 100, -245, 0, 127);
-      sendControl(1 + FINGER_N + MODE2_CONTROL, val);
+      sendControl(FINGER_N + MODE2_CONTROL, val);
     }
   }
 }
