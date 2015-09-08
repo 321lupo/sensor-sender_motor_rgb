@@ -83,12 +83,19 @@ bool muted = false;
 int current_note = -1;
 
 
-// timing details: we want to send midi at a 50hz clock
-// that means everz 20 ms
+// timing details: we want to send midi at a 100hz clock
+// that means every 10 ms
 int lastMidiSend = 0;
-#define MIDI_INTERVAL 20
+#define MIDI_INTERVAL 10
 
-int midiClock = 0;
+/*
+ * Arpeggiator!
+ * The number of midi clock ticks we've received. There
+ * are 24 per quarter note.
+ */
+int midi_clock = 1;
+bool send_arpegg = false;
+uint8_t arpegg_interval = 0; // number of ticks between on and off (and on, and off...)
 
 void setup() {
   Serial.begin(9600);
@@ -96,6 +103,8 @@ void setup() {
   initFingers();
   initAccel();
   initButtons();
+
+  usbMIDI.setHandleRealTimeSystem(handleMidiClock);
 
   readCalibration();
   
@@ -186,6 +195,7 @@ void loop() {
 }
 
 void clearOutput() {
+  send_arpegg = false;
   if (current_note != -1){
     usbMIDI.sendNoteOff(current_note, 99, MIDI_CHAN);
     current_note = -1;
@@ -273,14 +283,14 @@ void sendOutput() {
        * Send a motor hit
        */
       digitalWrite(motorPin, HIGH);
-      delay(4);                                                                           //make milis!!!
+      delay(4);
       digitalWrite(motorPin, LOW);
       delay(6);
 
       /*
        * Show the LED
        */
-      ledval = map(ledval, 0, 127, 0, 127);
+      //ledval = map(ledval, 0, 127, 0, 127);       // CHANGE LED TO MIRROR ACCEL
       if (ledval > 255) {ledval = 255;}
       analogWrite(BLUE1, ledval * 1);
       analogWrite(BLUE2, ledval * 1);
@@ -299,29 +309,32 @@ void sendOutput() {
    
   /*
    * Accel X is the note value.
-   * Accel Y is a single control
-   * The average of the fingers is the arpeggiator speed
+   * Accel Y is the speed
+   * If the fingers are in a fist, then send a note. 
    */
   else if (mode == 1 ) {
-#define THUMB_THRESH 250
-
-    if(fingers[0] > THUMB_THRESH){
-      noteOn();
-    } else {
-      noteOff();
-    }
-    xy_lock %= (FINGER_N);
-    
-    // Send control channels
-    if (xy_lock != 0){
-      int val = map(fingers[xy_lock], 100, 400, 0, 127);
-      sendControl(xy_lock + MODE1_CONTROL, val);
-    } else {
-      for(int i = 1; i< FINGER_N; i++){
-        int val = map(fingers[i], 100, 400, 0, 127);
-        sendControl(i + MODE1_CONTROL, val);
+    bool in_fist = true;
+    for (int i = 1; i < FINGER_N && in_fist; i++){
+      if (fingers[i] < 330){
+        in_fist = false;
       }
     }
+
+    if( in_fist) {
+      send_arpegg = true;
+      Serial.println("Gesture on");
+    } else {
+      send_arpegg = false;
+      noteOff();
+    }
+
+    /*
+     * Map the Y accel to the midi interval
+     */
+    arpegg_interval =  map (accel_y, 250, -250, 1, 4) * 2;
+    if( arpegg_interval < 1){ arpegg_interval = 1; }
+    Serial.print("Arpeggio interval: ");
+    Serial.println(arpegg_interval);
   }
 
   /*
@@ -374,9 +387,14 @@ void sendControl(int num, int val) {
 }
 
 
+/*
+ * Send a note, based on accel_x, that is mapped
+ * to a one-octave C-major scale.
+ */
 void noteOn(){
-  int note = map (accel_x, -130, 220, 0, 8);
-  if (note>=7) note=7;
+#define SCALE_SIZE 8
+  int note = map (accel_x, -130, 220, 0, SCALE_SIZE);  
+  if (note >= SCALE_SIZE ) note = SCALE_SIZE - 1;
   if (note<=0) note=0;
 
   int scale[] = {60, 62, 64, 65, 67, 69, 71, 72};
@@ -403,6 +421,24 @@ void noteOff(){
     // send note up
     usbMIDI.sendNoteOff(current_note, 99, MIDI_CHAN);
     current_note = -1;
+  }
+}
+
+/**
+ * Called every time there's a midi tick
+ */
+void handleMidiTick() {
+  Serial.println("tick");
+  // We're just using this for arpeggiator
+  if (! send_arpegg) {
+    return;
+  }
+  int val = midi_clock % (arpegg_interval * 2);
+
+  if (val == 0){
+    noteOn();
+  } else if (val == arpegg_interval) {
+    noteOff();
   }
 }
   
@@ -472,11 +508,14 @@ void readFingers(){
   for(int i = 0; i< FINGER_N; i++){
     SmoothPin pin = finger_pins[i];
     pin.read();
+
+    // Apply the calibration values to the raw finger result
     fingers[i] = map(pin.value, fingerMin[i], fingerMax[i], 0, 500);
     //fingers[i] = pin.value;
     //Serial.println(pin.value);
   }
 }
+
 
 #define DIFF_THRESH 130
 bool gesture(int fv[], const int def[]){
@@ -505,7 +544,7 @@ void updateCalibration() {
     if (val < fingerMin[i]){
       fingerMin[i] = val;
     }
-    char buf[30];
+    char buf[128];
     sprintf(buf, "%d (%d): %d, %d ", i, val, fingerMin[i], fingerMax[i]);
     Serial.println(buf);
   }
@@ -544,19 +583,21 @@ void writeCalibration() {
   }
 }
 
-/* void handleMidiClock(byte message){
-  if (message == 248){
-    midiClock++;
+/*
+ * Called by the midi library, whenever a tick comes in. 
+ */
+void handleMidiClock(byte message){
+  if (message == 248){ // tick
+    midi_clock++;
+    handleMidiTick();
   }
 
   else if (message == 250 || message == 251){
     //MIDI START / MIDI CONTINUE
-    midiClock = 0;
+    midi_clock = 0;
   }
-  else if (mmessage == 252){
+  else if (message == 252){
     // MIDI STOP
   }
-
-  midiClock %= 24 * 4; // 24 pulses per quarter note
-}*/
+}
 
