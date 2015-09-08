@@ -86,7 +86,7 @@ int current_note = -1;
 // timing details: we want to send midi at a 100hz clock
 // that means every 10 ms
 int lastMidiSend = 0;
-#define MIDI_INTERVAL 10
+#define MIDI_INTERVAL 20
 
 /*
  * Arpeggiator!
@@ -209,6 +209,9 @@ void clearOutput() {
   analogWrite(GREEN2, 0);
 }
 
+int gestureDebounce = 0;
+int lastxcontrol = -1;
+int lastycontrol = -1;
 void sendOutput() {
    // timing code: if it's been more than 20ms since our last
   // send, then send again
@@ -244,7 +247,9 @@ void sendOutput() {
     Serial.print("}");
     Serial.println();
     
-    
+    /*
+     * Todo: debounce this somehow! ouch.
+     */
     if(gesture(fingers, (const int[])          { 465, 89, 250, 461, 467, 450, 404, 414,  }     )) {xcontrol = 1; ycontrol=2; } //pistol
     else if( gesture(fingers,  (const int[])   { 250, 414, 474, 457, 438, 408, 341, 386, }     )) {xcontrol = 3; ycontrol=4;} //fist
     else if( gesture(fingers,  (const int[])   { 89, 50, -5, 30, 90, 31, 56, 52, }             )) {send_note = true; ycontrol=5; } //flat
@@ -254,6 +259,22 @@ void sendOutput() {
     else if( gesture(fingers,  (const int[])   { 416, 31, 158, 24, 500, 403, 408, 418, }       )) {xcontrol = 13; ycontrol=14;} // big gun copy this line to add new gestures
 
     bool in_gesture = (xcontrol != -1 || ycontrol != -1);
+
+    if (xcontrol != lastxcontrol  || ycontrol != lastycontrol) {
+      if (gestureDebounce == 0){
+        gestureDebounce = millis();
+        return;
+      }
+
+      if (millis() - gestureDebounce < 40){
+        return;
+      }
+    }
+
+    gestureDebounce = 0;
+    lastxcontrol = xcontrol;
+    lastycontrol = ycontrol;
+    
 
     if (send_note && xy_lock != 2) {
       noteOn();
@@ -321,7 +342,6 @@ void sendOutput() {
 
     if( in_fist) {
       send_arpegg = true;
-      Serial.println("Gesture on");
     } else {
       send_arpegg = false;
       noteOff();
@@ -332,8 +352,8 @@ void sendOutput() {
      */
     arpegg_interval =  map (accel_y, 250, -250, 1, 4) * 2;
     if( arpegg_interval < 1){ arpegg_interval = 1; }
-    Serial.print("Arpeggio interval: ");
-    Serial.println(arpegg_interval);
+    //Serial.print("Arpeggio interval: ");
+    //Serial.println(arpegg_interval);
   }
 
   /*
@@ -389,7 +409,10 @@ void sendControl(int num, int val) {
 /*
  * Send a note, based on accel_x, that is mapped
  * to a one-octave C-major scale.
+ * 
+ * This needs to be debounced
  */
+int noteDebounce = 0;
 void noteOn(){
 #define SCALE_SIZE 8
   int note = map (accel_x, -130, 220, 0, SCALE_SIZE);  
@@ -400,17 +423,22 @@ void noteOn(){
   note = scale[note];
 
   if (current_note == note){
+    noteDebounce = 0;
     return;
   }
   
   if (current_note != -1){
+    if (noteDebounce == 0){
+      noteDebounce = millis();
+      return;
+    }
+    if ((millis() - noteDebounce) < 50){
+      return;
+    }
     usbMIDI.sendNoteOff(current_note, 99, MIDI_CHAN);
   }
-  #ifdef DEBUG
-  Serial.print("Sending note on ");
-  Serial.println(note);
-  #endif
-  
+
+  noteDebounce = 0;
   usbMIDI.sendNoteOn(note, 99, MIDI_CHAN);
   current_note = note;
 }
@@ -426,8 +454,7 @@ void noteOff(){
 /**
  * Called every time there's a midi tick
  */
-void handleMidiTick() {
-  Serial.println("tick");
+void handleMidiTick() { 
   // We're just using this for arpeggiator
   if (! send_arpegg) {
     return;
@@ -436,8 +463,16 @@ void handleMidiTick() {
 
   if (val == 0){
     noteOn();
+    analogWrite(RED1, 100);
+    analogWrite(RED2, 100);
+    analogWrite(GREEN1, 100);
+    analogWrite(GREEN2, 100);
   } else if (val == arpegg_interval) {
     noteOff();
+    analogWrite(RED1, 0);
+    analogWrite(RED2, 0);
+    analogWrite(GREEN1, 0);
+    analogWrite(GREEN2, 0);
   }
 }
   
@@ -516,7 +551,7 @@ void readFingers(){
 }
 
 
-#define DIFF_THRESH 130
+#define DIFF_THRESH 150
 bool gesture(int fv[], const int def[]){
   for(int i = 0; i < FINGER_N; i++){
     if (abs(fv[i] - def[i]) > DIFF_THRESH)
@@ -597,6 +632,13 @@ void handleMidiClock(byte message){
   }
   else if (message == 252){
     // MIDI STOP
+    if (send_arpegg){
+      analogWrite(RED1, 0);
+      analogWrite(RED2, 0);
+      analogWrite(GREEN1, 0);
+      analogWrite(GREEN2, 0);
+      noteOff();
+    }
   }
 }
 
