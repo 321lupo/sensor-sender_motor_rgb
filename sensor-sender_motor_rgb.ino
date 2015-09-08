@@ -246,7 +246,7 @@ void sendOutput() {
     
     
     if(gesture(fingers, (const int[])          { 465, 89, 250, 461, 467, 450, 404, 414,  }     )) {xcontrol = 1; ycontrol=2; } //pistol
-    else if( gesture(fingers,  (const int[])   { 291, 450, 376, 472, 421, 478, 467, 487, }     )) {xcontrol = 3; ycontrol=4;} //fist
+    else if( gesture(fingers,  (const int[])   { 250, 414, 474, 457, 438, 408, 341, 386, }     )) {xcontrol = 3; ycontrol=4;} //fist
     else if( gesture(fingers,  (const int[])   { 89, 50, -5, 30, 90, 31, 56, 52, }             )) {send_note = true; ycontrol=5; } //flat
     else if( gesture(fingers,  (const int[])   { 179, 266, -23, 361, 95, 348, 108, 150, }      )) {xcontrol = 7; ycontrol=8;} //tiger
     else if( gesture(fingers,  (const int[])   { 528, 42, 402, 47, 420, 43, 394, 176, }        )) {xcontrol = 9; ycontrol=10;} //duck
@@ -267,16 +267,15 @@ void sendOutput() {
     
     if (in_gesture){
       Serial.println("In gesture");
-      int ledval = 0;
+      int xmidi = 0;
+      int ymidi = 0;
       if (xcontrol != -1 && xy_lock != 2){
-        int xmidi = map (accel_x, -130, 220, 0, 127);    
+        xmidi = map (accel_x, -130, 220, 0, 127);    
         sendControl(xcontrol + MODE0_CONTROL, xmidi);
-        ledval = xmidi;
       }
       if (ycontrol != -1 && xy_lock != 1){
-        int ymidi = map (accel_y, 100, -245, 0, 127);    
+        ymidi = map (accel_y, 150, -245, 0, 127);    
         sendControl(ycontrol + MODE0_CONTROL, ymidi);
-        if(ymidi > ledval) { ledval = ymidi;}
       }
 
       /*
@@ -288,15 +287,15 @@ void sendOutput() {
       delay(6);
 
       /*
-       * Show the LED
+       * Show the LED: calibrate the midi values to a LED value
        */
-      //ledval = map(ledval, 0, 127, 0, 127);       // CHANGE LED TO MIRROR ACCEL
-      if (ledval > 255) {ledval = 255;}
-      analogWrite(BLUE1, ledval * 1);
-      analogWrite(BLUE2, ledval * 1);
+      int ledval = map(ymidi, 0, 127, 90, 200);
+      analogWrite(BLUE1, ledval);
+      analogWrite(BLUE2, ledval);
 
-      analogWrite(GREEN1, ledval * 0);
-      analogWrite(GREEN2, ledval * 0);
+      ledval = map(xmidi, 0, 127, 90, 200);
+      analogWrite(GREEN1, ledval);
+      analogWrite(GREEN2, ledval);
       
     }
     else {
